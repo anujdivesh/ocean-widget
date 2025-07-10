@@ -1,0 +1,16 @@
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="dist/niue_forecast.js"></script>
+<script>
+  // Wait for script to load, then:
+  if (window.NiueForecast) {
+    // If your UMD build exports a default component:
+    ReactDOM.render(
+      React.createElement(window.NiueForecast.default ?? window.NiueForecast),
+      document.getElementById('root')
+    );
+    // Or: window.NiueForecast.render(...), if you export a render function
+  } else {
+    console.error('NiueForecast global not found!');
+  }
+</script>

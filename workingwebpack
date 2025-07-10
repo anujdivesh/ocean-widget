@@ -1,0 +1,30 @@
+const path = require('path');
+
+module.exports = {
+  entry: './src/NiueForecast.js',
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    filename: 'NiueForecast.js',
+    library: 'NiueForecast',
+    libraryTarget: 'umd',
+    globalObject: 'this'
+  },
+  externals: {
+    react: 'React',
+    'react-dom': 'ReactDOM'
+  },
+  
+  module: {
+    rules: [
+      {
+        test: /\.jsx?$/,
+        exclude: /node_modules/,
+        use: 'babel-loader'
+      },
+      {
+        test: /\.css$/i,
+        use: ['style-loader', 'css-loader'],
+      }
+    ]
+  }
+};

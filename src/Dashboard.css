@@ -1,0 +1,26 @@
+.dashboard-view {
+    display: flex;
+    flex-direction: column;
+}
+.dashboard-controls {
+    background: #f8f9fa;
+    border-bottom: 1px solid #dee2e6;
+    flex-shrink: 0;
+}
+.data-limit-control {
+    display: flex;
+    align-items: center;
+    margin-left: 1rem;
+}
+.chart-container {
+    height: calc(100% - 60px);
+    position: relative;
+}
+@media (max-width: 768px) {
+    .chart-container {
+        height: calc(100% - 80px);
+    }
+    .dashboard-view {
+        height: calc(100vh - 56px - 20px);
+    }
+}
