@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Container, Button, Row, Col, Form, Spinner, Badge, Card } from 'react-bootstrap';
 import { FaTimes, FaWaveSquare, FaArrowLeft } from 'react-icons/fa';
-import { Line } from 'react-chartjs-2';
+import Plot from 'react-plotly.js';
 import 'chart.js/auto';
 import Lottie from 'lottie-react';
 import animationData from './live.json';
@@ -320,103 +320,55 @@ const RealtimeComponent = ({
             );
         }
 
-        const chartConfig = {
-            labels: data.labels,
-            datasets: data.datasets.map((dataset, index) => {
-                const baseConfig = {
-                    label: dataset.label,
-                    data: dataset.values,
-                    borderColor: fixedColors[index % fixedColors.length],
-                    backgroundColor: fixedColors[index % fixedColors.length],
-                    fill: false,
-                    tension: 0.4,
-                    cubicInterpolationMode: 'monotone',
-                    yAxisID: `y-axis-${index}`,
-                };
-        
-                if (index === 2) {
-                    return {
-                        ...baseConfig,
-                        showLine: false,
-                        pointRadius: 5,
-                        pointHoverRadius: 7,
-                        pointStyle: 'circle',
-                    };
-                }
-        
-                return baseConfig;
-            }),
+        // Prepare Plotly traces
+        const traces = data.datasets.map((dataset, index) => {
+            const color = fixedColors[index % fixedColors.length];
+            let mode = 'lines+markers';
+            if (index === 2) mode = 'markers';
+            return {
+                x: data.labels,
+                y: dataset.values,
+                name: dataset.label,
+                type: 'scatter',
+                mode,
+                marker: { color },
+                line: { color },
+                yaxis: index === 0 ? 'y1' : index === 1 ? 'y2' : 'y3',
+            };
+        });
+
+        const layout = {
+            autosize: true,
+            height: 300,
+            margin: { t: 40, l: 60, r: 60, b: 60 },
+            legend: { orientation: 'h', y: -0.2 },
+            xaxis: { title: 'Time', tickangle: -45 },
+            yaxis: { title: 'Wave Height (m)', side: 'left' },
+            yaxis2: {
+                title: 'Peak Period (s)',
+                overlaying: 'y',
+                side: 'right',
+                showgrid: false,
+                range: [0, 30],
+            },
+            yaxis3: {
+                title: 'Direction (degrees)',
+                overlaying: 'y',
+                side: 'right',
+                position: 1,
+                showgrid: false,
+                range: [0, 360],
+            },
+            showlegend: true,
         };
 
         return (
-            <Line
-                data={chartConfig}
-                options={{
-                    maintainAspectRatio: false,
-                    responsive: true,
-                    scales: {
-                        x: {
-                            ticks: {
-                                display: true,
-                                maxRotation: 45,
-                                autoSkip: true,
-                            },
-                        },
-                        'y-axis-0': {  // This is your left axis (wave height)
-                            type: 'linear',
-                            display: true,
-                            position: 'left',
-                            title: {
-                            display: true,
-                            text: 'Wave Height (m)',
-                            },
-                            grid: {
-                            drawOnChartArea: true,
-                            },
-                        },
-                        'y-axis-1': {
-                            type: 'linear',
-                            display: true,
-                            position: 'right',
-                            title: {
-                                display: true,
-                                text: 'Peak Period (s)',
-                            },
-                            grid: {
-                                drawOnChartArea: false,
-                            },
-                            min: 0,
-                            max: 30,
-                        },
-                        'y-axis-2': {
-                            type: 'linear',
-                            display: true,
-                            position: 'right',
-                            title: {
-                                display: true,
-                                text: 'Direction (degrees)',
-                            },
-                            grid: {
-                                drawOnChartArea: false,
-                            },
-                            min: 0,
-                            max: 360,
-                        },
-                    },
-                    interaction: {
-                        mode: 'index',
-                        intersect: false,
-                      },
-                    plugins: {
-                        tooltip: {
-                            callbacks: {
-                                label: function(context) {
-                                    return `${context.dataset.label}: ${context.parsed.y}`;
-                                }
-                            }
-                        }
-                    }
-                }}
+            <Plot
+                data={traces}
+                layout={layout}
+                useResizeHandler={true}
+                style={{ width: '100%', height: '100%' }}
+                config={{ responsive: true }}
             />
         );
     };

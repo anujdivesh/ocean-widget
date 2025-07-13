@@ -236,6 +236,7 @@ function BottomOffCanvas({ show, onHide, data }) {
                   {activeTab === "tabular" && <Tabular perVariableData={perVariableData} />}
                   {activeTab === "timeseries" && <Timeseries perVariableData={perVariableData} />}
                   {activeTab === "map" && <MapPreview perVariableData={perVariableData} />}
+                  
                 </>
         }
       </Offcanvas.Body>

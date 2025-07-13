@@ -1,36 +1,231 @@
 import React, { useRef, useState, useEffect } from "react";
 import Offcanvas from "react-bootstrap/Offcanvas";
 import 'chart.js/auto';
-import { Line } from "react-chartjs-2";
+// import { Line } from "react-chartjs-2";
+import Plot from 'react-plotly.js';
 
 // Fixed color palette for datasets
-const fixedColors = [
-  'rgb(255, 99, 132)',   // 0: hs
-  'rgb(54, 162, 235)',   // 1: tpeak
-  'rgb(255, 206, 86)',   // 2: dirp
-  'rgb(75, 192, 192)',
-  'rgb(153, 102, 255)',
+const BUOY_COLORS = [
+  '#D81B60', // Vivid Pink
+  '#1E88E5', // Vivid Blue
+  '#FFC107', // Vivid Amber
+];
+
+const MODEL_COLORS = [
+  '#004D40', // Deep Teal
+  '#F4511E', // Vivid Orange
+  '#43A047', // Vivid Green
 ];
 
 const MIN_HEIGHT = 100;
 const MAX_HEIGHT = 800;
 
-const MODEL_VARIABLES = ["hs", "tpeak", "dirp"];
-const MODEL_BASE_URL =
-  "https://gemthreddshpc.spc.int/thredds/wms/POP/model/country/spc/forecast/hourly/NIU/ForecastNiue_latest.nc?REQUEST=GetTimeseries&LAYERS={layer}&QUERY_LAYERS={layer}&BBOX=-169.91273760795596%2C-18.980304292913193%2C-169.89213824272156%2C-18.973273303415304&SRS=CRS:84&FEATURE_COUNT=5&HEIGHT=693&WIDTH=1920&X=948&Y=147&STYLES=default/default&VERSION=1.1.1&TIME=2025-07-08T18%3A00%3A00.000Z%2F2025-07-15T18%3A00%3A00.000Z&INFO_FORMAT=text/json";
+const MODEL_VARIABLES = ["hs_p1", "tp_p1", "dirp_p1"];
+const LATEST_CAPABILITY_URL = "https://gemthreddshpc.spc.int/thredds/wms/POP/model/country/spc/forecast/hourly/NIU/ForecastNiue_latest.nc?service=WMS&version=1.3.0&request=GetCapabilities";
+const PREVIOUS_CAPABILITY_URL = "https://gemthreddshpc.spc.int/thredds/wms/POP/model/country/spc/forecast/hourly/NIU/ForecastNiue_latest_01.nc?service=WMS&version=1.3.0&request=GetCapabilities";
 
-async function fetchModelVariable(layer) {
-  const url = MODEL_BASE_URL.replace(/{layer}/g, layer);
+// Time parsing functions from NiueForecast.js
+function parseTimeDimensionFromCapabilities(xml, layerName) {
+  const parser = new window.DOMParser();
+  const dom = parser.parseFromString(xml, "text/xml");
+  const layers = Array.from(dom.getElementsByTagName("Layer"));
+  let targetLayer = null;
+  for (const l of layers) {
+    const nameNode = l.getElementsByTagName("Name")[0];
+    if (nameNode && nameNode.textContent === layerName) {
+      targetLayer = l;
+      break;
+    }
+  }
+  if (!targetLayer) return null;
+  const dimensionNodes = Array.from(targetLayer.getElementsByTagName("Dimension"));
+  for (const dim of dimensionNodes) {
+    if (dim.getAttribute("name") === "time") {
+      return dim.textContent.trim();
+    }
+  }
+  const extentNodes = Array.from(targetLayer.getElementsByTagName("Extent"));
+  for (const ext of extentNodes) {
+    if (ext.getAttribute("name") === "time") {
+      return ext.textContent.trim();
+    }
+  }
+  return null;
+}
+
+function getTimeRangeFromDimension(dimStr) {
+  if (!dimStr) return null;
+  if (dimStr.includes("/")) {
+    const [start, end, step] = dimStr.split("/");
+    return {
+      start: new Date(start),
+      end: new Date(end),
+      step: step || "PT1H"
+    };
+  }
+  const times = dimStr.split(",").map(s => new Date(s));
+  if (times.length > 1) {
+    const stepMs = times[1] - times[0];
+    return {
+      start: times[0],
+      end: times[times.length - 1],
+      step: `PT${Math.round(stepMs / 1000 / 60 / 60)}H`
+    };
+  }
+  return null;
+}
+
+function formatDateISOString(date) {
+  return date.toISOString().split(".")[0] + ".000Z";
+}
+
+// New functions for fetching forecast data
+async function fetchCapabilities(url) {
+  //console.log(`Fetching capabilities from: ${url}`);
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`Model API error for ${layer}`);
+  if (!res.ok) throw new Error(`Failed to fetch capabilities from ${url}`);
+  const xml = await res.text();
+  //console.log("URL::" + url);
+  return xml;
+}
+
+async function fetchForecastData(baseUrl, layer, timeRange) {
+  const timeParam = `${formatDateISOString(timeRange.start)}/${formatDateISOString(timeRange.end)}`;
+  const url = `${baseUrl}?REQUEST=GetTimeseries&LAYERS=${layer}&QUERY_LAYERS=${layer}&BBOX=-169.9315,-19.05455,-169.9314,-19.05445&SRS=CRS:84&FEATURE_COUNT=5&HEIGHT=1&WIDTH=1&X=0&Y=0&STYLES=default/default&VERSION=1.1.1&TIME=${timeParam}&INFO_FORMAT=text/json`;
+  
+  console.log(`Fetching forecast data from: ${url}`);
+  
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch forecast data from ${baseUrl}`);
   const json = await res.json();
-  return { layer, json };
+  
+  //console.log(`Forecast data response for ${baseUrl} [${layer}]:`, json);
+  //console.log(`Time range: ${timeParam}`);
+  //console.log(`Data points: ${json.domain?.axes?.t?.values?.length || 0}`);
+  
+  return json;
+}
+
+async function fetchCombinedForecastData() {
+  try {
+    // Fetch capabilities from both forecasts
+    const [latestCapabilities, previousCapabilities] = await Promise.all([
+      fetchCapabilities(LATEST_CAPABILITY_URL),
+      fetchCapabilities(PREVIOUS_CAPABILITY_URL)
+    ]);
+
+    // Parse time dimensions
+    const latestTimeDim = parseTimeDimensionFromCapabilities(latestCapabilities, "hs_p1");
+    const previousTimeDim = parseTimeDimensionFromCapabilities(previousCapabilities, "hs_p1");
+    console.log("latestTimeDim:: " + latestTimeDim);
+
+    //console.log('Parsed time dimensions:');
+    //console.log('Latest time dimension:', latestTimeDim);
+    //console.log('Previous time dimension:', previousTimeDim);
+
+    if (!latestTimeDim || !previousTimeDim) {
+      throw new Error("Could not parse time dimensions from capabilities");
+    }
+
+    const latestTimeRange = getTimeRangeFromDimension(latestTimeDim);
+    const previousTimeRange = getTimeRangeFromDimension(previousTimeDim);
+
+    //console.log('Parsed time ranges:');
+    //console.log('Latest time range:', latestTimeRange);
+    //console.log('Previous time range:', previousTimeRange);
+
+    if (!latestTimeRange || !previousTimeRange) {
+      throw new Error("Could not parse time ranges");
+    }
+
+    // Calculate time ranges for each forecast
+    const sevenAndHalfDaysAgo = new Date(latestTimeRange.end.getTime() - (7.5 * 24 * 60 * 60 * 1000));
+    const latestStart = sevenAndHalfDaysAgo;
+    const latestEnd = latestTimeRange.end;
+    const previousStart = previousTimeRange.start;
+    const previousEnd = latestTimeRange.start;
+
+    //console.log('Time ranges:', {
+    //   latest: { start: latestStart, end: latestEnd },
+    //   previous: { start: previousStart, end: previousEnd }
+    // });
+
+    // For each variable, fetch latest and previous separately, then combine
+    const combinedRanges = {};
+    let combinedDomain = null;
+    let combinedParameters = {};
+    for (const v of MODEL_VARIABLES) {
+      // Fetch both latest and previous for this variable
+      const [latestData, previousData] = await Promise.all([
+        fetchForecastData(
+          "https://gemthreddshpc.spc.int/thredds/wms/POP/model/country/spc/forecast/hourly/NIU/ForecastNiue_latest.nc",
+          v,
+          { start: latestStart, end: latestEnd }
+        ),
+        fetchForecastData(
+          "https://gemthreddshpc.spc.int/thredds/wms/POP/model/country/spc/forecast/hourly/NIU/ForecastNiue_latest_01.nc",
+          v,
+          { start: previousStart, end: previousEnd }
+        )
+      ]);
+      console.log(previousData)
+      // // Debug: print the full JSON for tp_p1 and dirp_p1
+      // if (v === "tp_p1" || v === "dirp") {
+      //   //console.log(`Full latestData for ${v}:`, latestData);
+      //   //console.log(`Full previousData for ${v}:`, previousData);
+      // }
+      // For the first variable, set the domain and parameters
+      if (!combinedDomain) {
+        combinedDomain = {
+          axes: {
+            t: {
+              values: [
+                ...previousData.domain.axes.t.values,
+                ...latestData.domain.axes.t.values
+              ]
+            }
+          }
+        };
+      }
+      combinedParameters = {
+        ...combinedParameters,
+        ...previousData.parameters,
+        ...latestData.parameters
+      };
+      combinedRanges[v] = {
+        values: [
+          ...(previousData.ranges?.[v]?.values || []),
+          ...(latestData.ranges?.[v]?.values || [])
+        ]
+      };
+      // //console.log(`Sample ${v} values:`, combinedRanges[v].values.slice(0, 5));
+      // //console.log(`Combined ${v} values length:`, combinedRanges[v].values.length);
+    }
+
+    const combinedData = {
+      domain: combinedDomain,
+      parameters: combinedParameters,
+      ranges: combinedRanges
+    };
+
+    // //console.log('Combined forecast data:', combinedData);
+    // //console.log('Total combined data points:', combinedData.domain.axes.t.values.length);
+    // //console.log('Sample time values:', combinedData.domain.axes.t.values.slice(0, 5));
+
+    return combinedData;
+  } catch (error) {
+    console.error('Error fetching combined forecast data:', error);
+    throw error;
+  }
 }
 
 async function fetchAllModelVariables() {
-  const fetches = MODEL_VARIABLES.map(fetchModelVariable);
-  // Results: [{ layer: "hs", json: {...} }, ...]
-  return Promise.all(fetches);
+  try {
+    const combinedData = await fetchCombinedForecastData();
+    return [{ layer: "combined", json: combinedData }];
+  } catch (error) {
+    throw error;
+  }
 }
 
 function extractModelVariables(model, variables) {
@@ -58,6 +253,33 @@ function extractModelVariables(model, variables) {
     }
   }
   return result;
+}
+
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('Error in Plotly component:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ color: 'red', padding: '1rem' }}>
+          <p>Error rendering chart: {this.state.error?.message}</p>
+          <button onClick={() => this.setState({ hasError: false })}>Try again</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
@@ -136,10 +358,12 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
       .then(json => {
         setData(json.data);
         setLoading(false);
+        setHasLoadedData(prev => ({ ...prev, buoy: true }));
       })
       .catch(e => {
         setFetchError("Failed to fetch buoy data");
         setLoading(false);
+        setHasLoadedData(prev => ({ ...prev, buoy: false }));
       });
   }, [buoyId, show]);
 
@@ -154,24 +378,32 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
       .then(results => {
         // Use the first result's domain as base (all should match)
         const domain = results[0].json.domain;
-        const parameters = {};
-        const ranges = {};
-        results.forEach(({ layer, json }) => {
-          parameters[layer] = json.parameters[layer] || { description: { en: layer } };
-          ranges[layer] = json.ranges[layer];
-        });
+        const parameters = results[0].json.parameters;
+        const ranges = results[0].json.ranges;
         setModelData({ domain, parameters, ranges });
         setModelLoading(false);
+        setHasLoadedData(prev => ({ ...prev, model: true }));
       })
       .catch(e => {
-        setModelError("Failed to fetch model data");
+        console.error('Error fetching model data:', e);
+        setModelError("Failed to fetch model data: " + e.message);
         setModelLoading(false);
+        setHasLoadedData(prev => ({ ...prev, model: false }));
       });
   }, [show]);
+
+  useEffect(() => {
+    if (show) {
+      //console.log('Plotly data:', { plotlyBuoyData, plotlyModelData });
+      //console.log('Plotly layout:', { plotlyBuoyLayout, plotlyModelLayout });
+    }
+  }, [show, plotlyBuoyData, plotlyModelData, plotlyBuoyLayout, plotlyModelLayout]);
 
   // Prepare chart data and formatting for Sofarocean
   let chartData = null;
   let chartOptions = {};
+  let plotlyBuoyData = null;
+  let plotlyBuoyLayout = null;
   if (activeTab === "buoy" && data && data.waves && data.waves.length > 0) {
     const waves = data.waves;
     const labels = waves.map(w =>
@@ -179,140 +411,190 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
         ? w.timestamp.substring(0, 16).replace("T", " ")
         : w.timestamp
     );
-    chartData = {
-      labels,
-      datasets: [
-        {
-          label: "Significant Wave Height (m)",
-          data: waves.map(w => w.significantWaveHeight),
-          fill: false,
-          backgroundColor: fixedColors[0].replace("rgb", "rgba").replace(")", ", 0.2)"),
-          borderColor: fixedColors[0],
-          tension: 0.3,
-          yAxisID: "hs",
-          pointRadius: 2,
-          showLine: true,
-          type: "line"
-        },
-        {
-          label: "Mean Period (s)",
-          data: waves.map(w => w.meanPeriod),
-          fill: false,
-          backgroundColor: fixedColors[1].replace("rgb", "rgba").replace(")", ", 0.2)"),
-          borderColor: fixedColors[1],
-          tension: 0.3,
-          yAxisID: "tpeak",
-          pointRadius: 2,
-          showLine: true,
-          type: "line"
-        },
-        {
-          label: "Mean Direction (°)",
-          data: waves.map(w => w.meanDirection),
-          fill: false,
-          borderColor: fixedColors[2],
-          backgroundColor: fixedColors[2],
-          yAxisID: "dirp",
-          showLine: false,
-          pointRadius: 4,
-          type: "scatter"
-        }
-      ]
-    };
-    chartOptions = {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: {
-        mode: 'nearest',
-        intersect: false,
+    plotlyBuoyData = [
+      {
+        x: labels,
+        y: waves.map(w => w.significantWaveHeight),
+        name: "Significant Wave Height (m)",
+        type: 'scatter',
+        mode: 'lines',
+        //marker: { color: BUOY_COLORS[0], symbol: 'circle', size: 6 },
+        line: { color: BUOY_COLORS[0], width: 2 },
+        yaxis: 'y',
       },
-      plugins: {
-        legend: { position: "top" },
+      {
+        x: labels,
+        y: waves.map(w => w.meanPeriod),
+        name: "Mean Period (s)",
+        type: 'scatter',
+        mode: 'lines',
+        //marker: { color: BUOY_COLORS[1], symbol: 'square', size: 6 },
+        line: { color: BUOY_COLORS[1], width: 2, dash: 'dot' },
+        yaxis: 'y2',
       },
-      scales: {
-        hs: { type: "linear", display: true, position: "left", title: { display: true, text: "Height (m)" } },
-        tpeak: { type: "linear", display: true, position: "right", title: { display: true, text: "Period (s)" }, grid: { drawOnChartArea: false } },
-        dirp: { type: "linear", display: true, position: "right", title: { display: true, text: "Direction (°)" }, grid: { drawOnChartArea: false } },
+      {
+        x: labels,
+        y: waves.map(w => w.meanDirection),
+        name: "Mean Direction (°)",
+        type: 'scatter',
+        mode: 'lines',
+        //marker: { color: BUOY_COLORS[2], symbol: 'diamond', size: 7 },
+        line: { color: BUOY_COLORS[2], width: 2, dash: 'dash' },
+        yaxis: 'y3',
       },
-      elements: {
-        point: {
-          radius: 3
-        }
-      }
+    ];
+    plotlyBuoyLayout = {
+      autosize: true,
+      height: Math.max(Math.min(height - 100, 500), 300),
+      margin: { t: 60, l: 70, r: 70, b: 60 },
+      legend: { orientation: 'h', y: 1.15, x: 0.5, xanchor: 'center' },
+      xaxis: { 
+        title: 'Time', 
+        tickangle: -45, 
+        showgrid: true,
+        tickmode: 'auto',
+        nticks: 10,
+        tickformat: '%b %d %Y',
+        tickfont: { size: 10 },
+        tickwidth: 1,
+        ticklen: 5,
+        tickcolor: '#666',
+        showticklabels: true,
+        automargin: true
+      },
+      yaxis: { title: 'Height (m)', side: 'left', showgrid: true, zeroline: false },
+      yaxis2: {
+        title: 'Period (s)',
+        overlaying: 'y',
+        side: 'right',
+        showgrid: false,
+        zeroline: false,
+        anchor: 'x',
+      },
+      yaxis3: {
+        title: 'Direction (°)',
+        overlaying: 'y',
+        side: 'right',
+        position: 1,
+        showgrid: false,
+        zeroline: false,
+        anchor: 'x',
+      },
+      hovermode: 'x unified',
+      showlegend: true,
+      dragmode: 'pan',
     };
   }
 
   // Prepare chart data for model
   let modelChartData = null;
   let modelChartOptions = {};
+  let plotlyModelData = [];
+  let plotlyModelLayout = null;
   let modelMissingVars = [];
+  console.log("1");
   if (activeTab === "model" && modelData && modelData.domain && modelData.domain.axes && modelData.domain.axes.t) {
-    // Always try to plot hs, tpeak, dirp
     const variables = MODEL_VARIABLES;
+ 
     const varMeta = extractModelVariables(modelData, variables);
-
-    // Track missing variables
     modelMissingVars = variables.filter(v => !modelData.ranges || !modelData.ranges[v]);
-
     const labels = modelData.domain.axes.t.values.map(t =>
       t.length > 15 ? t.substring(0, 16).replace("T", " ") : t
     );
-
-    let dsIdx = 0;
-    const datasets = variables.map(v => {
-      const meta = varMeta[v];
-      const color = fixedColors[dsIdx % fixedColors.length];
-      dsIdx++;
-      let yAxisID = v;
-      let type = v === "dirp" ? "scatter" : "line";
-      let showLine = v !== "dirp";
-      let pointRadius = v === "dirp" ? 4 : 2;
-      return {
-        label: meta.label || v,
-        data: meta.values,
-        fill: false,
-        backgroundColor: color.replace("rgb", "rgba").replace(")", ", 0.2)"),
-        borderColor: color,
-        tension: 0.3,
-        yAxisID,
-        pointRadius,
-        showLine,
-        type
-      };
-    });
-
-    modelChartData = {
-      labels,
-      datasets,
-    };
-    modelChartOptions = {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: {
-        mode: 'nearest',
-        intersect: false,
+    console.log("2");
+    // Debug: log the modelData.ranges and the arrays for each variable
+    console.log('modelData.ranges:', modelData.ranges);
+    //console.log('hs_p1:', modelData.ranges?.hs_p1?.values);
+    //console.log('tp_p1:', modelData.ranges?.tp_p1?.values);
+    //console.log('dirp_p1:', modelData.ranges?.dirp_p1?.values);
+    plotlyModelData = [
+      {
+        x: labels,
+        y: modelData.ranges?.hs_p1?.values || [],
+        name: "Significant Wave Height (Model)",
+        type: 'scatter',
+        mode: 'lines',
+        line: { color: MODEL_COLORS[0], width: 2, dash: 'dot' },
+        yaxis: 'y',
       },
-      plugins: {
-        legend: { position: "top" },
+      {
+        x: labels,
+        y: modelData.ranges?.tp_p1?.values || [],
+        name: "Wind Wave Period (Model)",
+        type: 'scatter',
+        mode: 'lines',
+        line: { color: MODEL_COLORS[1], width: 2, dash: 'dot' },
+        yaxis: 'y2',
       },
-      scales: {
-        hs: { type: "linear", display: true, position: "left", title: { display: true, text: "Height (m)" } },
-        tpeak: { type: "linear", display: true, position: "right", title: { display: true, text: "Period (s)" }, grid: { drawOnChartArea: false } },
-        dirp: { type: "linear", display: true, position: "right", title: { display: true, text: "Direction (°)" }, grid: { drawOnChartArea: false } },
-      },
-      elements: {
-        point: {
-          radius: 3
-        }
+      {
+        x: labels,
+        y: modelData.ranges?.dirp_p1?.values || [],
+        name: "Wind Wave Direction (Model)",
+        type: 'scatter',
+        mode: 'lines',
+        line: { color: MODEL_COLORS[2], width: 2, dash: 'dot' },
+        yaxis: 'y3',
       }
+    ];
+    //console.log('plotlyModelData:', plotlyModelData);
+    plotlyModelLayout = {
+      autosize: true,
+      height: Math.max(Math.min(height - 100, 500), 300),
+      margin: { t: 60, l: 70, r: 70, b: 60 },
+      legend: { orientation: 'h', y: 1.15, x: 0.5, xanchor: 'center' },
+      xaxis: { title: 'Time', tickangle: -45, showgrid: true },
+      yaxis: { title: 'Height (m)', side: 'left', showgrid: true, zeroline: false },
+      yaxis2: {
+        title: 'Period (s)',
+        overlaying: 'y',
+        side: 'right',
+        showgrid: false,
+        zeroline: false,
+        anchor: 'x',
+      },
+      yaxis3: {
+        title: 'Direction (°)',
+        overlaying: 'y',
+        side: 'right',
+        position: 1,
+        showgrid: false,
+        zeroline: false,
+        anchor: 'x',
+      },
+      hovermode: 'x unified',
+      showlegend: true,
+      dragmode: 'pan',
     };
   }
 
-  // Tab labels, you can add more tabs here in the future
-  const tabLabels = [
-    { key: "buoy", label: `Buoy: ${buoyId || ""}` },
-    { key: "model", label: "Model" }
-  ];
+  // Add this new state to track if we've loaded data
+  const [hasLoadedData, setHasLoadedData] = useState({
+    buoy: false,
+    model: false
+  });
+
+  // Switch to appropriate tab based on buoy
+  useEffect(() => {
+    if (buoyId === "SPOT-31091C") {
+      setActiveTab("combination");
+    } else {
+      setActiveTab("buoy");
+    }
+  }, [buoyId]);
+
+
+  let tabLabels = [];
+  
+  if (buoyId === "SPOT-31091C") {
+    tabLabels = [
+      // { key: "model", label: "Model" },
+      { key: "combination", label: "Buoy vs Model" }
+    ];
+  } else {
+    tabLabels = [
+      { key: "buoy", label: `Buoy: ${buoyId || ""}` }
+    ];
+  }
 
   return (
     <Offcanvas
@@ -399,33 +681,267 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
           ×
         </button>
       </div>
-      <Offcanvas.Body style={{ paddingTop: 16 }}>
+      <Offcanvas.Body style={{ paddingTop: 16, height: 'calc(100% - 60px)' }}>
         {activeTab === "buoy" && loading && <div style={{ textAlign: "center", padding: "2rem" }}>Loading buoy data...</div>}
         {activeTab === "buoy" && fetchError && <div style={{ color: "red", textAlign: "center" }}>{fetchError}</div>}
-        {activeTab === "buoy" && !loading && !fetchError && chartData && (
-          <div style={{ width: "100%", height: `${Math.max(height - 100, 100)}px` }}>
-            <Line data={chartData} options={chartOptions} />
+        {activeTab === "buoy" && !loading && !fetchError && data?.waves?.length > 0 && (
+          <div style={{ width: "100%", height: "100%", minHeight: '300px' }}>
+            <ErrorBoundary>
+              <Plot
+                data={plotlyBuoyData}
+                layout={{
+                  ...plotlyBuoyLayout,
+                  autosize: true,
+                  height: null,
+                  width: null
+                }}
+                useResizeHandler={true}
+                style={{ width: '100%', height: '100%', minHeight: '300px' }}
+                config={{
+                  responsive: true,
+                  displayModeBar: true,
+                  scrollZoom: true
+                }}
+                onError={err => console.error('Plotly error:', err)}
+              />
+            </ErrorBoundary>
           </div>
         )}
         {activeTab === "buoy" && !loading && !fetchError && data && (!data.waves || data.waves.length === 0) && (
           <div style={{ textAlign: "center", color: "#999" }}>No data available for this buoy.</div>
         )}
-        {activeTab === "model" && modelLoading && <div style={{ textAlign: "center", padding: "2rem" }}>Loading model data...</div>}
-        {activeTab === "model" && modelError && <div style={{ color: "red", textAlign: "center" }}>{modelError}</div>}
-        {activeTab === "model" && !modelLoading && !modelError && modelChartData && (
-          <>
-            <div style={{ width: "100%", height: `${Math.max(height - 100, 100)}px` }}>
-              <Line data={modelChartData} options={modelChartOptions} />
-            </div>
+        {activeTab === "model" && modelLoading && (
+          <div style={{ textAlign: "center", padding: "2rem" }}>Loading model data...</div>
+        )}
+        {activeTab === "model" && modelError && (
+          <div style={{ color: "red", textAlign: "center" }}>{modelError}</div>
+        )}
+        {activeTab === "model" && !modelLoading && !modelError && (
+          <div style={{ width: "100%", height: "100%", minHeight: '300px' }}>
+            <ErrorBoundary>
+              <Plot
+                data={plotlyModelData}
+                layout={{
+                  ...plotlyModelLayout,
+                  autosize: true,
+                  height: null,
+                  width: null
+                }}
+                useResizeHandler={true}
+                style={{ width: '100%', height: '100%', minHeight: '300px' }}
+                config={{
+                  responsive: true,
+                  displayModeBar: true,
+                  scrollZoom: true
+                }}
+                onError={err => console.error('Plotly error:', err)}
+              />
+            </ErrorBoundary>
             {modelMissingVars.length > 0 && (
               <div style={{ color: "orange", textAlign: "center", paddingTop: 10 }}>
                 No model data for: {modelMissingVars.join(', ')}
               </div>
             )}
-          </>
+          </div>
         )}
         {activeTab === "model" && !modelLoading && !modelError && !modelChartData && (
           <div style={{ textAlign: "center", color: "#999" }}>No model data available.</div>
+        )}
+        {activeTab === "combination" && (
+          <div style={{ width: "100%", height: "100%", minHeight: '300px' }}>
+            <ErrorBoundary>
+              {(!hasLoadedData.buoy || !hasLoadedData.model) ? (
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'center', 
+                  alignItems: 'center', 
+                  height: '100%',
+                  color: '#666',
+                  flexDirection: 'column',
+                  gap: '10px'
+                }}>
+                  <div>Loading data for comparison...</div>
+                  <div style={{ fontSize: '0.9em', color: '#999' }}>
+                    {!hasLoadedData.buoy && 'Loading buoy data...'}
+                    {!hasLoadedData.model && ' Loading model data...'}
+                  </div>
+                </div>
+              ) : (
+                <Plot
+                  data={(() => {
+                    // Prepare buoy data with its own time axis
+                    let buoyTraces = [];
+                    if (data && data.waves && data.waves.length > 0) {
+                      const buoyTimes = data.waves.map(w => w.timestamp);
+                      const buoyLabels = buoyTimes.map(t => 
+                        typeof t === "string" && t.length > 15 ? t.substring(0, 16).replace("T", " ") : t
+                      );
+                      const buoyData = {
+                        hs: data.waves.map(w => w.significantWaveHeight || w.waveHs || w.hs),
+                        tpeak: data.waves.map(w => w.meanPeriod || w.peakPeriod || w.waveTp || w.tpeak),
+                        dirp: data.waves.map(w => w.meanDirection || w.waveDp || w.dirp)
+                      };
+                      
+                      buoyTraces = [
+                        {
+                          x: buoyLabels,
+                          y: buoyData.hs,
+                          name: 'Significant Wave Height (Buoy)',
+                          type: 'scatter',
+                          mode: 'lines',
+                          line: { color: BUOY_COLORS[0], width: 2, dash: 'solid' },
+                          yaxis: 'y',
+                        },
+                        {
+                          x: buoyLabels,
+                          y: buoyData.tpeak,
+                          name: 'Peak Wave Period (Buoy)',
+                          type: 'scatter',
+                          mode: 'lines',
+                          line: { color: BUOY_COLORS[1], width: 2, dash: 'solid' },
+                          yaxis: 'y2',
+                        },
+                        {
+                          x: buoyLabels,
+                          y: buoyData.dirp,
+                          name: 'Mean Wave Direction (Buoy)',
+                          type: 'scatter',
+                          mode: 'lines',
+                          line: { color: BUOY_COLORS[2], width: 2, dash: 'solid' },
+                          yaxis: 'y3',
+                        }
+                      ];
+                    }
+                    
+                    // Prepare model data with its own time axis
+                    let modelTraces = [];
+                    if (modelData && modelData.domain && modelData.domain.axes && modelData.domain.axes.t) {
+                      const modelTimes = modelData.domain.axes.t.values || [];
+                      const modelLabels = modelTimes.map(t => 
+                        t.length > 15 ? t.substring(0, 16).replace("T", " ") : t
+                      );
+                      console.log("hs_p1 ::" + modelData.ranges?.hs_p1?.values);
+                      console.log("dirp_p1 ::" + modelData.ranges?.dirp_p1?.values);
+                      console.log("tp_p1 ::" + modelData.ranges?.tp_p1?.values);
+                      
+
+                      modelTraces = [
+                        {
+                          x: modelLabels,
+                          y: modelData.ranges?.hs_p1?.values || [],
+                          name: 'Significant Wave Height (Model)',
+                          type: 'scatter',
+                          mode: 'lines',
+                          line: { color: MODEL_COLORS[0], width: 2, dash: 'dot' },
+                          yaxis: 'y',
+                        },
+                        {
+                          x: modelLabels,
+                          y: modelData.ranges?.tp_p1?.values || [],
+                          name: 'Wind Wave Period (Model)',
+                          type: 'scatter',
+                          mode: 'lines',
+                          line: { color: MODEL_COLORS[1], width: 2, dash: 'dot' },
+                          yaxis: 'y2',
+                        },
+                        {
+                          x: modelLabels,
+                          y: modelData.ranges?.dirp_p1?.values || [],
+                          name: 'Wind Wave Direction (Model)',
+                          type: 'scatter',
+                          mode: 'lines',
+                          line: { color: MODEL_COLORS[2], width: 2, dash: 'dot' },
+                          yaxis: 'y3',
+                        }
+                      ];
+                    }
+                    
+                    //console.log('Final traces count:', {
+                    //   modelTraces: modelTraces.length,
+                    //   buoyTraces: buoyTraces.length,
+                    //   total: modelTraces.length + buoyTraces.length
+                    // });
+                    
+                    return [...modelTraces, ...buoyTraces];
+                  })()}
+                  layout={{
+                    title: "Model vs Buoy: All Variables",
+                    xaxis: { 
+                      title: "Time", 
+                      tickangle: -45, 
+                      showgrid: true,
+                      tickmode: 'auto',
+                      nticks: 10,
+                      tickformat: '%b %d %Y',
+                      tickfont: { size: 10 },
+                      tickwidth: 1,
+                      ticklen: 5,
+                      tickcolor: '#666',
+                      showticklabels: true,
+                      automargin: true
+                    },
+                    yaxis: { title: "Height (m)", side: 'left', showgrid: true, zeroline: false },
+                    yaxis2: {
+                      title: "Period (s)",
+                      overlaying: 'y',
+                      side: 'right',
+                      showgrid: false,
+                      zeroline: false,
+                      anchor: 'x',
+                    },
+                    yaxis3: {
+                      title: "Direction (°)",
+                      overlaying: 'y',
+                      side: 'right',
+                      position: 1,
+                      showgrid: false,
+                      zeroline: false,
+                      anchor: 'x',
+                    },
+                    legend: { orientation: 'h', y: 1.15, x: 0.5, xanchor: 'center' },
+                    hovermode: 'x unified',
+                    autosize: true,
+                    height: Math.max(Math.min(height - 100, 500), 300),
+                    margin: { t: 60, l: 70, r: 70, b: 80 },
+                    dragmode: 'pan', // <--- This line sets pan as default
+                  }}
+                  useResizeHandler={true}
+                  style={{ width: '100%', height: '100%', minHeight: '300px' }}
+                  config={{
+                    responsive: true,
+                    displayModeBar: true,
+                    scrollZoom: true,
+                    modeBarButtonsToRemove: ['select2d', 'lasso2d'],
+                    displaylogo: false
+                  }}
+                  onError={err => console.error('Plotly error:', err)}
+                />
+              )}
+            </ErrorBoundary>
+            {hasLoadedData.buoy && hasLoadedData.model && (
+              (() => {
+                // Check if all traces are empty
+                const modelTimes = modelData?.domain?.axes?.t?.values || [];
+                const hasModel = modelData?.ranges?.hs_p1?.values?.length > 0;
+                const hasBuoy = data?.waves?.length > 0;
+                if (!hasModel && !hasBuoy) {
+                  return (
+                    <div style={{
+                      textAlign: 'center',
+                      color: 'orange',
+                      padding: '10px',
+                      backgroundColor: '#fff8e1',
+                      marginTop: '10px',
+                      borderRadius: '4px'
+                    }}>
+                      No data available for comparison. Please check if both buoy and model data are available.
+                    </div>
+                  );
+                }
+                return null;
+              })()
+            )}
+          </div>
         )}
       </Offcanvas.Body>
     </Offcanvas>

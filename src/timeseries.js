@@ -1,8 +1,6 @@
 import React, { useEffect, useState } from "react";
-import 'chart.js/auto';
-import { Line } from "react-chartjs-2";
+import Plot from 'react-plotly.js';
 
-// Fixed color palette for datasets
 const fixedColors = [
   'rgb(255, 99, 132)',   // 0: hs
   'rgb(54, 162, 235)',   // 1: tpeak
@@ -29,12 +27,11 @@ function extractCoverageTimeseries(json, variable) {
 }
 
 function Timeseries({ perVariableData }) {
-  const [series, setSeries] = useState([]);
+  const [plotData, setPlotData] = useState([]);
   const [labels, setLabels] = useState([]);
   const [error, setError] = useState("");
   const [parentHeight, setParentHeight] = useState(undefined);
 
-  // Dynamically read parent height (Offcanvas.Body)
   useEffect(() => {
     const el = document.querySelector('.offcanvas-body');
     if (el) {
@@ -50,23 +47,21 @@ function Timeseries({ perVariableData }) {
   useEffect(() => {
     let isMounted = true;
     if (!perVariableData) {
-      setSeries([]);
+      setPlotData([]);
       setLabels([]);
       setError("No timeseries data available.");
       return;
     }
 
-    // Order: hs, tpeak, dirp
     const layers = [
-      { key: "hs", label: "Significant Wave Height", yAxisID: "hs", type: "line", colorIdx: 0 },
-      { key: "tpeak", label: "Peak Wave Period", yAxisID: "tpeak", type: "line", colorIdx: 1 },
-      { key: "dirp", label: "Mean Wave Direction", yAxisID: "dirp", type: "scatter", colorIdx: 2 },
+      { key: "hs", label: "Significant Wave Height", colorIdx: 0, yaxis: 'y1', type: 'scatter', mode: 'lines+markers' },
+      { key: "tpeak", label: "Peak Wave Period", colorIdx: 1, yaxis: 'y2', type: 'scatter', mode: 'lines+markers' },
+      { key: "dirp", label: "Mean Wave Direction", colorIdx: 2, yaxis: 'y3', type: 'scatter', mode: 'markers' },
     ];
-    const results = [];
     let newLabels = [];
-
+    const traces = [];
     for (let idx = 0; idx < layers.length; idx++) {
-      const { key, label, yAxisID, type, colorIdx } = layers[idx];
+      const { key, label, colorIdx, yaxis, type, mode } = layers[idx];
       const color = fixedColors[colorIdx % fixedColors.length];
       const tsJson = perVariableData[key];
       const ts = extractCoverageTimeseries(tsJson, key);
@@ -76,38 +71,22 @@ function Timeseries({ perVariableData }) {
             typeof v === "string" && v.length > 15 ? v.substring(0, 16).replace("T", " ") : v
           );
         }
-        if (type === "line") {
-          results.push({
-            label,
-            data: ts.values,
-            fill: false,
-            backgroundColor: color.replace('rgb', 'rgba').replace(')', ', 0.2)'),
-            borderColor: color,
-            tension: 0.3,
-            yAxisID,
-            pointRadius: 2,
-            showLine: true,
-            type: 'line'
-          });
-        } else if (type === "scatter") {
-          results.push({
-            label,
-            data: ts.values,
-            fill: false,
-            borderColor: color,
-            backgroundColor: color,
-            yAxisID,
-            showLine: false,
-            pointRadius: 4,
-            type: 'scatter'
-          });
-        }
+        traces.push({
+          x: newLabels,
+          y: ts.values,
+          name: label,
+          type,
+          mode,
+          marker: { color },
+          line: { color },
+          yaxis,
+        });
       }
     }
     if (!isMounted) return;
     setLabels(newLabels);
-    setSeries(results);
-    if (results.length === 0) setError("No timeseries data returned.");
+    setPlotData(traces);
+    if (traces.length === 0) setError("No timeseries data returned.");
     else setError("");
     return () => {
       isMounted = false;
@@ -116,33 +95,47 @@ function Timeseries({ perVariableData }) {
 
   if (!perVariableData) return <div>No data available.</div>;
   if (error) return <div style={{ color: "red" }}>{error}</div>;
-  if (series.length === 0) return <div>No timeseries data.</div>;
+  if (plotData.length === 0) return <div>No timeseries data.</div>;
 
-  const options = {
-    responsive: true,
-    maintainAspectRatio: false,
-    interaction: {
-        mode: 'nearest',
-        intersect: false,
-      },
-    plugins: {
-      legend: { position: "top" },
+  const layout = {
+    autosize: true,
+    height: parentHeight || 400,
+    margin: { t: 40, l: 60, r: 60, b: 60 },
+    legend: { orientation: 'h', y: -0.2 },
+    xaxis: { title: 'Time', tickangle: -45 },
+    yaxis: { title: 'Height (m)', side: 'left' },
+    yaxis2: {
+      title: 'Period (s)',
+      overlaying: 'y',
+      side: 'right',
+      showgrid: false,
     },
-    scales: {
-      hs: { type: "linear", display: true, position: "left", title: { display: true, text: "Height (m)" } },
-      tpeak: { type: "linear", display: true, position: "right", title: { display: true, text: "Period (s)" }, grid: { drawOnChartArea: false } },
-      dirp: { type: "linear", display: true, position: "right", title: { display: true, text: "Direction (°)" }, grid: { drawOnChartArea: false } },
+    yaxis3: {
+      title: 'Direction (°)',
+      overlaying: 'y',
+      side: 'right',
+      position: 1,
+      showgrid: false,
     },
-    elements: {
-      point: {
-        radius: 3
-      }
-    }
+    showlegend: true,
   };
+
+  // Map yaxis for each trace
+  plotData.forEach((trace, idx) => {
+    if (idx === 0) trace.yaxis = 'y1';
+    if (idx === 1) trace.yaxis = 'y2';
+    if (idx === 2) trace.yaxis = 'y3';
+  });
 
   return (
     <div style={{ width: "100%", height: parentHeight ? `${parentHeight}px` : "100%" }}>
-      <Line data={{ labels, datasets: series }} options={options} />
+      <Plot
+        data={plotData}
+        layout={layout}
+        useResizeHandler={true}
+        style={{ width: '100%', height: '100%' }}
+        config={{ responsive: true }}
+      />
     </div>
   );
 }
