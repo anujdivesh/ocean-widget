@@ -3,11 +3,8 @@ import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import Accordion from "react-bootstrap/Accordion";
 import Form from "react-bootstrap/Form";
-import Button from "react-bootstrap/Button";
-import ButtonGroup from "react-bootstrap/ButtonGroup";
 import addWMSTileLayer from "./addWMSTileLayer";
 import BottomOffCanvas from "./BottomOffCanvas";
-import Dropdown from "react-bootstrap/Dropdown";
 import WaveForecastAccordion from "./WaveForecastAccordion";
 import WavebuoyAccordion from "./WavebuoyAccordion";
 import BottomBuoyOffCanvas from "./BottomBuoyOffCanvas";
@@ -32,19 +29,7 @@ const widgetContainerStyle = {
   zIndex: 9999,
 };
 
-const floatingSidebarStyle = {
-  position: "absolute",
-  top: 100,
-  left: 24,
-  width: 400,
-  background: "rgba(255,255,255,0.97)",
-  borderRadius: 8,
-  boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
-  zIndex: 10001,
-  maxHeight: "calc(100vh - 48px)",
-  overflowY: "auto",
-  padding: "16px"
-};
+// Note: floatingSidebarStyle will be created dynamically in the component
 
 const WAVE_FORECAST_LAYERS = [
   {
@@ -226,6 +211,11 @@ function NiueForecast() {
   const [isPlaying, setIsPlaying] = useState(false);
   const playTimer = useRef(null);
   const [wmsOpacity, setWmsOpacity] = useState(1);
+  
+  // Drag state for movable sidebar
+  const [sidebarPosition, setSidebarPosition] = useState({ x: 24, y: 100 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
 
   // Only one bottom canvas open at once:
   const openBottomCanvas = (data) => {
@@ -240,6 +230,63 @@ function NiueForecast() {
   };
 
   const handleShow = useCallback((info) => openBottomCanvas(info), []);
+
+  // Drag handlers for movable sidebar
+  const handleMouseDown = (e) => {
+    if (e.target.closest('.accordion-button, .accordion-collapse, .form-check, button, input, select')) {
+      return; // Don't start drag if clicking on interactive elements
+    }
+    
+    setIsDragging(true);
+    const rect = e.currentTarget.getBoundingClientRect();
+    setDragOffset({
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    });
+    e.preventDefault();
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isDragging) return;
+    
+    const newX = e.clientX - dragOffset.x;
+    const newY = e.clientY - dragOffset.y;
+    
+    // Keep sidebar within viewport bounds
+    const maxX = window.innerWidth - 400; // sidebar width
+    const maxY = window.innerHeight - 200; // approximate sidebar height
+    
+    setSidebarPosition({
+      x: Math.max(0, Math.min(newX, maxX)),
+      y: Math.max(0, Math.min(newY, maxY))
+    });
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+  };
+
+  // Add global mouse event listeners
+  useEffect(() => {
+    if (isDragging) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = 'grabbing';
+      document.body.style.userSelect = 'none';
+    } else {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isDragging, dragOffset]);
 
   useEffect(() => {
     async function fetchCapabilities() {
@@ -329,12 +376,12 @@ function NiueForecast() {
       layerRefs.current.osm = null;
     }
     if (activeLayers["stamen-toner"] && !layerRefs.current["stamen-toner"]) {
-      const tonerLayer = L.tileLayer("https://stamen-tiles.a.ssl.fastly.net/toner/{z}/{x}/{y}.png", {
+    /* const tonerLayer = L.tileLayer("https://stamen-tiles.a.ssl.fastly.net/toner/{z}/{x}/{y}.png", {
         attribution: 'Map tiles by <a href="http://stamen.com">Stamen Design</a>',
         detectRetina: true,
       });
-      tonerLayer.addTo(mapInstance.current);
-      layerRefs.current["stamen-toner"] = tonerLayer;
+      tonerLayer.addTo(mapInstance.current);*/
+     // layerRefs.current["stamen-toner"] = tonerLayer;
     } else if (!activeLayers["stamen-toner"] && layerRefs.current["stamen-toner"]) {
       mapInstance.current.removeLayer(layerRefs.current["stamen-toner"]);
       layerRefs.current["stamen-toner"] = null;
@@ -508,6 +555,23 @@ function NiueForecast() {
     // eslint-disable-next-line
   }, [activeLayers["stamen-toner"], mapInstance.current]);
 
+  // Create dynamic sidebar style with current position
+  const floatingSidebarStyle = {
+    position: "absolute",
+    top: sidebarPosition.y,
+    left: sidebarPosition.x,
+    width: 400,
+    background: "rgba(255,255,255,0.97)",
+    borderRadius: 8,
+    boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+    zIndex: 10001,
+    maxHeight: "calc(100vh - 48px)",
+    overflowY: "auto",
+    padding: "16px",
+    cursor: isDragging ? "grabbing" : "grab",
+    userSelect: "none"
+  };
+
   const LayerAccordionHeader = ({ children, checked, onChange, eventKey }) => (
     <div
       style={{
@@ -533,7 +597,11 @@ function NiueForecast() {
 
   return (
     <div style={widgetContainerStyle}>
-      <div style={floatingSidebarStyle}>
+      <div 
+        style={floatingSidebarStyle}
+        onMouseDown={handleMouseDown}
+        title="Drag to move sidebar"
+      >
         <Accordion defaultActiveKey="layers">
           <Accordion.Item eventKey="layers">
             <Accordion.Header onClick={e => e.currentTarget.blur()}>Map Overlay</Accordion.Header>

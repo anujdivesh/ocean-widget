@@ -2,7 +2,6 @@ import React, { useRef, useState, useEffect } from "react";
 import Offcanvas from "react-bootstrap/Offcanvas";
 import Tabular from "./tabular";
 import Timeseries from "./timeseries";
-import MapPreview from "./map";
 
 // ---- Variables & config shared between modules ----
 const variableDefs = [
@@ -71,8 +70,7 @@ const MAX_HEIGHT = 800;
 
 const tabLabels = [
   { key: "tabular", label: "Tabular" },
-  { key: "timeseries", label: "Timeseries" },
-  { key: "map", label: "Map" }
+  { key: "timeseries", label: "Timeseries" }
 ];
 
 function BottomOffCanvas({ show, onHide, data }) {
@@ -235,7 +233,7 @@ function BottomOffCanvas({ show, onHide, data }) {
               : <>
                   {activeTab === "tabular" && <Tabular perVariableData={perVariableData} />}
                   {activeTab === "timeseries" && <Timeseries perVariableData={perVariableData} />}
-                  {activeTab === "map" && <MapPreview perVariableData={perVariableData} />}
+                  
                 </>
         }
       </Offcanvas.Body>

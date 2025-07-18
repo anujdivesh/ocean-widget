@@ -2,12 +2,12 @@ import React, { useRef, useState, useEffect } from "react";
 import Offcanvas from "react-bootstrap/Offcanvas";
 import 'chart.js/auto';
 import { Line } from "react-chartjs-2";
+import 'chartjs-adapter-date-fns';
 
-// Fixed color palette for datasets
 const fixedColors = [
   'rgb(255, 99, 132)',   // 0: hs
-  'rgb(54, 162, 235)',   // 1: tpeak
-  'rgb(255, 206, 86)',   // 2: dirp
+  'rgb(54, 162, 235)',   // 1: tm02
+  'rgb(255, 206, 86)',   // 2: dirm
   'rgb(75, 192, 192)',
   'rgb(153, 102, 255)',
 ];
@@ -15,50 +15,11 @@ const fixedColors = [
 const MIN_HEIGHT = 100;
 const MAX_HEIGHT = 800;
 
-const MODEL_VARIABLES = ["hs", "tpeak", "dirp"];
-const MODEL_BASE_URL =
-  "https://gemthreddshpc.spc.int/thredds/wms/POP/model/country/spc/forecast/hourly/NIU/ForecastNiue_latest.nc?REQUEST=GetTimeseries&LAYERS={layer}&QUERY_LAYERS={layer}&BBOX=-169.91273760795596%2C-18.980304292913193%2C-169.89213824272156%2C-18.973273303415304&SRS=CRS:84&FEATURE_COUNT=5&HEIGHT=693&WIDTH=1920&X=948&Y=147&STYLES=default/default&VERSION=1.1.1&TIME=2025-07-08T18%3A00%3A00.000Z%2F2025-07-15T18%3A00%3A00.000Z&INFO_FORMAT=text/json";
-
-async function fetchModelVariable(layer) {
-  const url = MODEL_BASE_URL.replace(/{layer}/g, layer);
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Model API error for ${layer}`);
-  const json = await res.json();
-  return { layer, json };
-}
-
-async function fetchAllModelVariables() {
-  const fetches = MODEL_VARIABLES.map(fetchModelVariable);
-  // Results: [{ layer: "hs", json: {...} }, ...]
-  return Promise.all(fetches);
-}
-
-function extractModelVariables(model, variables) {
-  // Always return arrays for requested variables, fill with nulls if missing
-  const result = {};
-  const N = model.domain.axes.t.values.length;
-  for (const v of variables) {
-    if (model.ranges && model.ranges[v]) {
-      result[v] = {
-        values: model.ranges[v].values,
-        label:
-          (model.parameters &&
-            model.parameters[v] &&
-            (model.parameters[v].description?.en ||
-              model.parameters[v].observedProperty?.label?.en ||
-              v)) ||
-          v,
-      };
-    } else {
-      // Fill with nulls so axes always appear, but line will not show
-      result[v] = {
-        values: Array(N).fill(null),
-        label: v,
-      };
-    }
-  }
-  return result;
-}
+const MODEL_VARIABLES = ["hs", "tm02", "dirm"];
+const MODEL_COMBINED_URL =
+  "https://gemthreddshpc.spc.int/thredds/fileServer/POP/model/country/spc/forecast/hourly/NIU/combined_model.json";
+const COMBINED_TAB_KEY = "combined";
+const SPECIAL_BUOY_ID = "SPOT-31091C";
 
 function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
   const [height, setHeight] = useState(400);
@@ -120,7 +81,7 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
     };
   }, [show, buoyId]);
 
-  // Fetch Sofarocean data when buoyId changes and panel is open
+  // Fetch Sofarocean data
   useEffect(() => {
     if (!show || !buoyId) return;
     setLoading(true);
@@ -143,36 +104,36 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
       });
   }, [buoyId, show]);
 
-  // Fetch model data for all variables in parallel
+  // Fetch model data (ONLY for SPECIAL_BUOY_ID and when relevant tab is shown)
   useEffect(() => {
-    if (!show) return;
+    if (!show || buoyId !== SPECIAL_BUOY_ID || (activeTab !== "model" && activeTab !== COMBINED_TAB_KEY)) {
+      setModelData(null);
+      setModelError("");
+      setModelLoading(false);
+      return;
+    }
     setModelLoading(true);
     setModelError("");
     setModelData(null);
-
-    fetchAllModelVariables()
-      .then(results => {
-        // Use the first result's domain as base (all should match)
-        const domain = results[0].json.domain;
-        const parameters = {};
-        const ranges = {};
-        results.forEach(({ layer, json }) => {
-          parameters[layer] = json.parameters[layer] || { description: { en: layer } };
-          ranges[layer] = json.ranges[layer];
-        });
-        setModelData({ domain, parameters, ranges });
+    fetch(MODEL_COMBINED_URL)
+      .then(res => {
+        if (!res.ok) throw new Error("Model API error");
+        return res.json();
+      })
+      .then(json => {
+        setModelData(json);
         setModelLoading(false);
       })
       .catch(e => {
         setModelError("Failed to fetch model data");
         setModelLoading(false);
       });
-  }, [show]);
+  }, [show, buoyId, activeTab]);
 
-  // Prepare chart data and formatting for Sofarocean
+  // Chart data for Sofarocean
   let chartData = null;
   let chartOptions = {};
-  if (activeTab === "buoy" && data && data.waves && data.waves.length > 0) {
+  if (data && data.waves && data.waves.length > 0) {
     const waves = data.waves;
     const labels = waves.map(w =>
       typeof w.timestamp === "string" && w.timestamp.length > 15
@@ -201,7 +162,7 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
           backgroundColor: fixedColors[1].replace("rgb", "rgba").replace(")", ", 0.2)"),
           borderColor: fixedColors[1],
           tension: 0.3,
-          yAxisID: "tpeak",
+          yAxisID: "tm02",
           pointRadius: 2,
           showLine: true,
           type: "line"
@@ -212,7 +173,7 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
           fill: false,
           borderColor: fixedColors[2],
           backgroundColor: fixedColors[2],
-          yAxisID: "dirp",
+          yAxisID: "dirm",
           showLine: false,
           pointRadius: 4,
           type: "scatter"
@@ -223,7 +184,7 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
       responsive: true,
       maintainAspectRatio: false,
       interaction: {
-        mode: 'nearest',
+        mode: 'index',
         intersect: false,
       },
       plugins: {
@@ -231,8 +192,12 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
       },
       scales: {
         hs: { type: "linear", display: true, position: "left", title: { display: true, text: "Height (m)" } },
-        tpeak: { type: "linear", display: true, position: "right", title: { display: true, text: "Period (s)" }, grid: { drawOnChartArea: false } },
-        dirp: { type: "linear", display: true, position: "right", title: { display: true, text: "Direction (°)" }, grid: { drawOnChartArea: false } },
+        tm02: { type: "linear", display: true, position: "right", title: { display: true, text: "Period (s)" }, grid: { drawOnChartArea: false } },
+        dirm: { type: "linear", display: true, position: "right", title: { display: true, text: "Direction (°)" }, grid: { drawOnChartArea: false } },
+        x: {
+          type: "category",
+          title: { display: true, text: "Date (UTC)" }
+        }
       },
       elements: {
         point: {
@@ -242,34 +207,38 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
     };
   }
 
-  // Prepare chart data for model
+  // Chart data for model
   let modelChartData = null;
   let modelChartOptions = {};
   let modelMissingVars = [];
-  if (activeTab === "model" && modelData && modelData.domain && modelData.domain.axes && modelData.domain.axes.t) {
-    // Always try to plot hs, tpeak, dirp
-    const variables = MODEL_VARIABLES;
-    const varMeta = extractModelVariables(modelData, variables);
-
-    // Track missing variables
-    modelMissingVars = variables.filter(v => !modelData.ranges || !modelData.ranges[v]);
-
-    const labels = modelData.domain.axes.t.values.map(t =>
-      t.length > 15 ? t.substring(0, 16).replace("T", " ") : t
+  if (
+    activeTab === "model" &&
+    buoyId === SPECIAL_BUOY_ID &&
+    modelData &&
+    Array.isArray(modelData.timestamps)
+  ) {
+    const labels = modelData.timestamps.map(t =>
+      t.length === 16 ? t + ":00Z" : t + "Z"
     );
-
+    modelMissingVars = MODEL_VARIABLES.filter(v => !Array.isArray(modelData[v]));
     let dsIdx = 0;
-    const datasets = variables.map(v => {
-      const meta = varMeta[v];
+    const datasets = MODEL_VARIABLES.map((v, i) => {
       const color = fixedColors[dsIdx % fixedColors.length];
       dsIdx++;
-      let yAxisID = v;
-      let type = v === "dirp" ? "scatter" : "line";
-      let showLine = v !== "dirp";
-      let pointRadius = v === "dirp" ? 4 : 2;
+      let yAxisID = v === "dirm" ? "dirm" : v;
+      let type = v === "dirm" ? "scatter" : "line";
+      let showLine = v !== "dirm";
+      let pointRadius = v === "dirm" ? 4 : 2;
       return {
-        label: meta.label || v,
-        data: meta.values,
+        label:
+          v === "hs"
+            ? "Significant Wave Height (m)"
+            : v === "tm02"
+            ? "Energy Period (s)"
+            : v === "dirm"
+            ? "Mean Direction (°)"
+            : v,
+        data: Array.isArray(modelData[v]) ? modelData[v] : Array(labels.length).fill(null),
         fill: false,
         backgroundColor: color.replace("rgb", "rgba").replace(")", ", 0.2)"),
         borderColor: color,
@@ -289,16 +258,29 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
       responsive: true,
       maintainAspectRatio: false,
       interaction: {
-        mode: 'nearest',
+        mode: 'index',
         intersect: false,
       },
       plugins: {
         legend: { position: "top" },
       },
       scales: {
+        x: {
+          type: "time",
+          time: {
+            timeZone: "UTC",
+            unit: "day",
+            tooltipFormat: "yyyy-MM-dd HH:mm",
+            displayFormats: {
+              day: "MMM dd",
+              hour: "HH:mm"
+            }
+          },
+          title: { display: true, text: "Date (UTC)" }
+        },
         hs: { type: "linear", display: true, position: "left", title: { display: true, text: "Height (m)" } },
-        tpeak: { type: "linear", display: true, position: "right", title: { display: true, text: "Period (s)" }, grid: { drawOnChartArea: false } },
-        dirp: { type: "linear", display: true, position: "right", title: { display: true, text: "Direction (°)" }, grid: { drawOnChartArea: false } },
+        tm02: { type: "linear", display: true, position: "right", title: { display: true, text: "Period (s)" }, grid: { drawOnChartArea: false } },
+        dirm: { type: "linear", display: true, position: "right", min: 0, max: 360, title: { display: true, text: "Direction (°)" }, grid: { drawOnChartArea: false } },
       },
       elements: {
         point: {
@@ -308,11 +290,177 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
     };
   }
 
-  // Tab labels, you can add more tabs here in the future
-  const tabLabels = [
-    { key: "buoy", label: `Buoy: ${buoyId || ""}` },
-    { key: "model", label: "Model" }
-  ];
+  // --- Combined Tab Logic ---
+  let combinedChartData = null;
+  let combinedChartOptions = {};
+  if (
+    activeTab === COMBINED_TAB_KEY &&
+    buoyId === SPECIAL_BUOY_ID &&
+    modelData &&
+    Array.isArray(modelData.timestamps) &&
+    data &&
+    data.waves &&
+    data.waves.length > 0
+  ) {
+    // Always use UTC ISO strings everywhere!
+    let buoyStart = null;
+    if (data && data.waves && data.waves.length > 0) {
+      let t = data.waves[0].timestamp;
+      buoyStart = t.length === 16 ? t + ":00Z" : t + "Z";
+    }
+    let modelFiltered = [];
+    if (modelData && Array.isArray(modelData.timestamps) && buoyStart) {
+      modelFiltered = modelData.timestamps
+        .map((t, i) => {
+          const iso = t.length === 16 ? t + ":00Z" : t + "Z";
+          return {
+            x: iso,
+            hs: modelData.hs ? modelData.hs[i] : null,
+            tm02: modelData.tm02 ? modelData.tm02[i] : null,
+            dirm: modelData.dirm ? modelData.dirm[i] : null
+          };
+        })
+        .filter(d => d.x >= buoyStart);
+    }
+    const buoyPoints = data.waves.map((w) => {
+      let t = w.timestamp;
+      if (t.length === 16) t += ":00Z";
+      else if (t.length === 19) t += "Z";
+      return {
+        x: t,
+        hs: w.significantWaveHeight ?? null,
+        tm02: w.meanPeriod ?? null,
+        dirm: w.meanDirection ?? null
+      };
+    });
+
+    combinedChartData = {
+      datasets: [
+        {
+          label: "Model Hs (m)",
+          data: modelFiltered.map(d => ({ x: d.x, y: d.hs })),
+          borderColor: fixedColors[0],
+          backgroundColor: fixedColors[0].replace("rgb", "rgba").replace(")", ", 0.15)"),
+          borderDash: [8, 4],
+          yAxisID: "hs",
+          pointRadius: 0,
+          fill: false,
+          type: "line",
+          order: 1,
+        },
+        {
+          label: "Buoy Hs (m)",
+          data: buoyPoints.map(d => ({ x: d.x, y: d.hs })),
+          borderColor: "#000",
+          backgroundColor: "#00000022",
+          yAxisID: "hs",
+          pointRadius: 0,
+          fill: false,
+          type: "line",
+          borderWidth: 2,
+          order: 2,
+        },
+        {
+          label: "Model tm02 (s)",
+          data: modelFiltered.map(d => ({ x: d.x, y: d.tm02 })),
+          borderColor: fixedColors[1],
+          backgroundColor: fixedColors[1].replace("rgb", "rgba").replace(")", ", 0.15)"),
+          borderDash: [8, 4],
+          yAxisID: "tm02",
+          pointRadius: 0,
+          fill: false,
+          type: "line",
+          order: 1,
+        },
+        {
+          label: "Buoy Mean Period (s)",
+          data: buoyPoints.map(d => ({ x: d.x, y: d.tm02 })),
+          borderColor: "#229944",
+          backgroundColor: "#22994422",
+          yAxisID: "tm02",
+          pointRadius: 0,
+          fill: false,
+          type: "line",
+          borderWidth: 2,
+          order: 2,
+        },
+        {
+          label: "Model dirm (°)",
+          data: modelFiltered.map(d => ({ x: d.x, y: d.dirm })),
+          borderColor: fixedColors[2],
+          backgroundColor: fixedColors[2].replace("rgb", "rgba").replace(")", ", 0.15)"),
+          borderDash: [8, 4],
+          yAxisID: "dirm",
+          pointRadius: 3,
+          fill: false,
+          type: "scatter",
+          order: 1,
+        },
+        {
+          label: "Buoy Mean Direction (°)",
+          data: buoyPoints.map(d => ({ x: d.x, y: d.dirm })),
+          borderColor: "#c06500",
+          backgroundColor: "#c0650022",
+          yAxisID: "dirm",
+          pointRadius: 3,
+          fill: false,
+          type: "scatter",
+          order: 2,
+        },
+      ],
+    };
+
+    combinedChartOptions = {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        mode: "index",
+        intersect: false,
+      },
+      plugins: {
+        legend: { position: "top" },
+      },
+      scales: {
+        x: {
+          type: "time",
+          time: {
+            unit: "day",
+            tooltipFormat: "yyyy-MM-dd HH:mm",
+            displayFormats: {
+              day: "MMM dd",
+              hour: "HH:mm"
+            }
+          },
+          title: { display: true, text: "Date (UTC)" }
+        },
+        hs: { type: "linear", display: true, position: "left", title: { display: true, text: "Height (m)" } },
+        tm02: { type: "linear", display: true, position: "right", title: { display: true, text: "Period (s)" }, grid: { drawOnChartArea: false } },
+        dirm: { type: "linear", display: true, position: "right", min: 0, max: 360, title: { display: true, text: "Direction (°)" }, grid: { drawOnChartArea: false } },
+      },
+      elements: {
+        point: { radius: 3 }
+      }
+    };
+  }
+
+  // Tab labels: Only show model/combined for SPECIAL_BUOY_ID, else only buoy
+  const tabLabels =
+    buoyId === SPECIAL_BUOY_ID
+      ? [
+          { key: "buoy", label: `Buoy: ${buoyId || ""}` },
+          { key: "model", label: "Model" },
+          { key: COMBINED_TAB_KEY, label: "Combined" }
+        ]
+      : [{ key: "buoy", label: `Buoy: ${buoyId || ""}` }];
+
+  // Only allow tab switching if tab exists for this buoy
+  const availableTabs = tabLabels.map(t => t.key);
+
+  // Ensure activeTab is valid for this buoy
+  useEffect(() => {
+    if (!availableTabs.includes(activeTab)) setActiveTab("buoy");
+    // eslint-disable-next-line
+  }, [buoyId]);
 
   return (
     <Offcanvas
@@ -377,6 +525,7 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
               aria-controls={`tab-panel-${tab.key}`}
               tabIndex={activeTab === tab.key ? 0 : -1}
               type="button"
+              disabled={!availableTabs.includes(tab.key)}
             >
               {tab.label}
             </button>
@@ -426,6 +575,18 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
         )}
         {activeTab === "model" && !modelLoading && !modelError && !modelChartData && (
           <div style={{ textAlign: "center", color: "#999" }}>No model data available.</div>
+        )}
+        {activeTab === COMBINED_TAB_KEY && buoyId === SPECIAL_BUOY_ID && (
+          <>
+            {(!modelData || !data || !data.waves) && (
+              <div style={{ textAlign: "center", color: "#999" }}>No combined data available.</div>
+            )}
+            {modelData && data && data.waves && (
+              <div style={{ width: "100%", height: `${Math.max(height - 100, 100)}px` }}>
+                <Line data={combinedChartData} options={combinedChartOptions} />
+              </div>
+            )}
+          </>
         )}
       </Offcanvas.Body>
     </Offcanvas>
