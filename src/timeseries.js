@@ -122,7 +122,7 @@ function Timeseries({ perVariableData }) {
     responsive: true,
     maintainAspectRatio: false,
     interaction: {
-        mode: 'nearest',
+        mode: 'index',
         intersect: false,
       },
     plugins: {

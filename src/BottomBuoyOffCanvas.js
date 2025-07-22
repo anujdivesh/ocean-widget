@@ -5,9 +5,9 @@ import { Line } from "react-chartjs-2";
 import 'chartjs-adapter-date-fns';
 
 const fixedColors = [
-  'rgb(255, 99, 132)',   // 0: hs
-  'rgb(54, 162, 235)',   // 1: tm02
-  'rgb(255, 206, 86)',   // 2: dirm
+  'rgb(255, 99, 132)',   // hs
+  'rgb(54, 162, 235)',   // tm02
+  'rgb(255, 206, 86)',   // dirm
   'rgb(75, 192, 192)',
   'rgb(153, 102, 255)',
 ];
@@ -20,6 +20,33 @@ const MODEL_COMBINED_URL =
   "https://gemthreddshpc.spc.int/thredds/fileServer/POP/model/country/spc/forecast/hourly/NIU/combined_model.json";
 const COMBINED_TAB_KEY = "combined";
 const SPECIAL_BUOY_ID = "SPOT-31091C";
+
+// Helper function for iso parsing, always returns UTC
+function parseISO(t) {
+  if (!t) return null;
+  // If already ISO with Z, just return
+  if (t.endsWith('Z')) return t;
+  // If just date/time, add Z
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(t)) return t + 'Z';
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(t)) return t + ':00Z';
+  return t;
+}
+
+// Find min/max UTC dates from all datasets [returns ISO string]
+function getAllDateRange(datasets) {
+  const allDates = datasets.flat().map(d => d.x).filter(Boolean);
+  // parse to Date objects for comparison
+  const dateObjs = allDates.map(t => new Date(t));
+  // If none, fallback to today
+  if (!dateObjs.length) {
+    const today = new Date();
+    return [today.toISOString(), today.toISOString()];
+  }
+  const minDate = new Date(Math.min(...dateObjs));
+  const maxDate = new Date(Math.max(...dateObjs));
+  // Return ISO strings (with Z)
+  return [minDate.toISOString(), maxDate.toISOString()];
+}
 
 function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
   const [height, setHeight] = useState(400);
@@ -38,6 +65,7 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
   const dragging = useRef(false);
   const startY = useRef(0);
   const startHeight = useRef(400);
+
   const onMouseDown = (e) => {
     dragging.current = true;
     startY.current = e.clientY;
@@ -59,7 +87,6 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
     document.removeEventListener("mouseup", onMouseUp);
   };
 
-  // Chart dynamic height based on Offcanvas.Body
   useEffect(() => {
     let timer = null;
     let observer = null;
@@ -81,7 +108,7 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
     };
   }, [show, buoyId]);
 
-  // Fetch Sofarocean data
+  // Fetch buoy data
   useEffect(() => {
     if (!show || !buoyId) return;
     setLoading(true);
@@ -130,84 +157,85 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
       });
   }, [show, buoyId, activeTab]);
 
-  // Chart data for Sofarocean
+  // ----------- Chart Data Construction ------------
+
+  // Buoy chart data (always use time axis)
   let chartData = null;
   let chartOptions = {};
   if (data && data.waves && data.waves.length > 0) {
     const waves = data.waves;
-    const labels = waves.map(w =>
-      typeof w.timestamp === "string" && w.timestamp.length > 15
-        ? w.timestamp.substring(0, 16).replace("T", " ")
-        : w.timestamp
-    );
+    const buoyHs = waves.map(w => ({ x: parseISO(w.timestamp), y: w.significantWaveHeight }));
+    const buoyTm02 = waves.map(w => ({ x: parseISO(w.timestamp), y: w.meanPeriod }));
+    const buoyDirm = waves.map(w => ({ x: parseISO(w.timestamp), y: w.meanDirection }));
+
+    // Use dynamic min/max
+    const [xMin, xMax] = getAllDateRange([buoyHs, buoyTm02, buoyDirm]);
+
     chartData = {
-      labels,
       datasets: [
         {
           label: "Significant Wave Height (m)",
-          data: waves.map(w => w.significantWaveHeight),
-          fill: false,
-          backgroundColor: fixedColors[0].replace("rgb", "rgba").replace(")", ", 0.2)"),
+          data: buoyHs,
           borderColor: fixedColors[0],
-          tension: 0.3,
+          backgroundColor: fixedColors[0].replace("rgb", "rgba").replace(")", ", 0.08)"),
           yAxisID: "hs",
-          pointRadius: 2,
-          showLine: true,
-          type: "line"
+          pointRadius: 3,
+          tension: 0.3,
+          type: "line",
+          spanGaps: true,
         },
         {
           label: "Mean Period (s)",
-          data: waves.map(w => w.meanPeriod),
-          fill: false,
-          backgroundColor: fixedColors[1].replace("rgb", "rgba").replace(")", ", 0.2)"),
+          data: buoyTm02,
           borderColor: fixedColors[1],
-          tension: 0.3,
+          backgroundColor: fixedColors[1].replace("rgb", "rgba").replace(")", ", 0.08)"),
           yAxisID: "tm02",
-          pointRadius: 2,
-          showLine: true,
-          type: "line"
+          pointRadius: 3,
+          tension: 0.3,
+          type: "line",
+          spanGaps: true,
         },
         {
           label: "Mean Direction (°)",
-          data: waves.map(w => w.meanDirection),
-          fill: false,
+          data: buoyDirm,
           borderColor: fixedColors[2],
-          backgroundColor: fixedColors[2],
+          backgroundColor: fixedColors[2].replace("rgb", "rgba").replace(")", ", 0.08)"),
           yAxisID: "dirm",
-          showLine: false,
           pointRadius: 4,
-          type: "scatter"
-        }
+          type: "line",
+          spanGaps: true,
+        },
       ]
     };
     chartOptions = {
       responsive: true,
       maintainAspectRatio: false,
-      interaction: {
-        mode: 'index',
-        intersect: false,
-      },
-      plugins: {
-        legend: { position: "top" },
-      },
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { position: "top" } },
       scales: {
+        x: {
+          type: "time",
+          time: {
+            timeZone: "UTC",
+            unit: "day",
+            tooltipFormat: "yyyy-MM-dd",
+            displayFormats: {
+              day: "MMM dd",
+            }
+          },
+          title: { display: true, text: "Date (UTC)" },
+          min: xMin,
+          max: xMax,
+        },
         hs: { type: "linear", display: true, position: "left", title: { display: true, text: "Height (m)" } },
         tm02: { type: "linear", display: true, position: "right", title: { display: true, text: "Period (s)" }, grid: { drawOnChartArea: false } },
-        dirm: { type: "linear", display: true, position: "right", title: { display: true, text: "Direction (°)" }, grid: { drawOnChartArea: false } },
-        x: {
-          type: "category",
-          title: { display: true, text: "Date (UTC)" }
-        }
+        dirm: { type: "linear", display: true, position: "right", min: 0, max: 360, title: { display: true, text: "Direction (°)" }, grid: { drawOnChartArea: false } },
       },
-      elements: {
-        point: {
-          radius: 3
-        }
-      }
+      elements: { point: { radius: 3 } }
     };
   }
 
-  // Chart data for model
+  // Model chart data (time axis)
   let modelChartData = null;
   let modelChartOptions = {};
   let modelMissingVars = [];
@@ -217,80 +245,79 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
     modelData &&
     Array.isArray(modelData.timestamps)
   ) {
-    const labels = modelData.timestamps.map(t =>
-      t.length === 16 ? t + ":00Z" : t + "Z"
-    );
+    const modelHs = modelData.timestamps.map((t, i) => ({ x: parseISO(t), y: modelData.hs?.[i] ?? null }));
+    const modelTm02 = modelData.timestamps.map((t, i) => ({ x: parseISO(t), y: modelData.tm02?.[i] ?? null }));
+    const modelDirm = modelData.timestamps.map((t, i) => ({ x: parseISO(t), y: modelData.dirm?.[i] ?? null }));
     modelMissingVars = MODEL_VARIABLES.filter(v => !Array.isArray(modelData[v]));
-    let dsIdx = 0;
-    const datasets = MODEL_VARIABLES.map((v, i) => {
-      const color = fixedColors[dsIdx % fixedColors.length];
-      dsIdx++;
-      let yAxisID = v === "dirm" ? "dirm" : v;
-      let type = v === "dirm" ? "scatter" : "line";
-      let showLine = v !== "dirm";
-      let pointRadius = v === "dirm" ? 4 : 2;
-      return {
-        label:
-          v === "hs"
-            ? "Significant Wave Height (m)"
-            : v === "tm02"
-            ? "Energy Period (s)"
-            : v === "dirm"
-            ? "Mean Direction (°)"
-            : v,
-        data: Array.isArray(modelData[v]) ? modelData[v] : Array(labels.length).fill(null),
-        fill: false,
-        backgroundColor: color.replace("rgb", "rgba").replace(")", ", 0.2)"),
-        borderColor: color,
-        tension: 0.3,
-        yAxisID,
-        pointRadius,
-        showLine,
-        type
-      };
-    });
+
+    // Use dynamic min/max
+    const [xMin, xMax] = getAllDateRange([modelHs, modelTm02, modelDirm]);
 
     modelChartData = {
-      labels,
-      datasets,
+      datasets: [
+        {
+          label: "Significant Wave Height (m)",
+          data: modelHs,
+          borderColor: fixedColors[0],
+          backgroundColor: fixedColors[0].replace("rgb", "rgba").replace(")", ", 0.08)"),
+          yAxisID: "hs",
+          pointRadius: 2,
+          tension: 0.3,
+          type: "line",
+          spanGaps: true,
+        },
+        {
+          label: "Energy Period (s)",
+          data: modelTm02,
+          borderColor: fixedColors[1],
+          backgroundColor: fixedColors[1].replace("rgb", "rgba").replace(")", ", 0.08)"),
+          yAxisID: "tm02",
+          pointRadius: 2,
+          tension: 0.3,
+          type: "line",
+          spanGaps: true,
+        },
+        {
+          label: "Mean Direction (°)",
+          data: modelDirm,
+          borderColor: fixedColors[2],
+          backgroundColor: fixedColors[2].replace("rgb", "rgba").replace(")", ", 0.08)"),
+          yAxisID: "dirm",
+          pointRadius: 3,
+          type: "line",
+          spanGaps: true,
+        }
+      ],
     };
     modelChartOptions = {
       responsive: true,
       maintainAspectRatio: false,
-      interaction: {
-        mode: 'index',
-        intersect: false,
-      },
-      plugins: {
-        legend: { position: "top" },
-      },
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { position: "top" } },
       scales: {
         x: {
           type: "time",
           time: {
             timeZone: "UTC",
             unit: "day",
-            tooltipFormat: "yyyy-MM-dd HH:mm",
+            tooltipFormat: "yyyy-MM-dd",
             displayFormats: {
               day: "MMM dd",
-              hour: "HH:mm"
             }
           },
-          title: { display: true, text: "Date (UTC)" }
+          title: { display: true, text: "Date (UTC)" },
+          min: xMin,
+          max: xMax,
         },
         hs: { type: "linear", display: true, position: "left", title: { display: true, text: "Height (m)" } },
         tm02: { type: "linear", display: true, position: "right", title: { display: true, text: "Period (s)" }, grid: { drawOnChartArea: false } },
         dirm: { type: "linear", display: true, position: "right", min: 0, max: 360, title: { display: true, text: "Direction (°)" }, grid: { drawOnChartArea: false } },
       },
-      elements: {
-        point: {
-          radius: 3
-        }
-      }
+      elements: { point: { radius: 3 } }
     };
   }
 
-  // --- Combined Tab Logic ---
+  // Combined overlay: model + buoy
   let combinedChartData = null;
   let combinedChartOptions = {};
   if (
@@ -302,110 +329,87 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
     data.waves &&
     data.waves.length > 0
   ) {
-    // Always use UTC ISO strings everywhere!
-    let buoyStart = null;
-    if (data && data.waves && data.waves.length > 0) {
-      let t = data.waves[0].timestamp;
-      buoyStart = t.length === 16 ? t + ":00Z" : t + "Z";
-    }
-    let modelFiltered = [];
-    if (modelData && Array.isArray(modelData.timestamps) && buoyStart) {
-      modelFiltered = modelData.timestamps
-        .map((t, i) => {
-          const iso = t.length === 16 ? t + ":00Z" : t + "Z";
-          return {
-            x: iso,
-            hs: modelData.hs ? modelData.hs[i] : null,
-            tm02: modelData.tm02 ? modelData.tm02[i] : null,
-            dirm: modelData.dirm ? modelData.dirm[i] : null
-          };
-        })
-        .filter(d => d.x >= buoyStart);
-    }
-    const buoyPoints = data.waves.map((w) => {
-      let t = w.timestamp;
-      if (t.length === 16) t += ":00Z";
-      else if (t.length === 19) t += "Z";
-      return {
-        x: t,
-        hs: w.significantWaveHeight ?? null,
-        tm02: w.meanPeriod ?? null,
-        dirm: w.meanDirection ?? null
-      };
-    });
+    // Parse all timestamps to ISO, overlay both series with time axis
+    const buoyHs = data.waves.map(w => ({ x: parseISO(w.timestamp), y: w.significantWaveHeight }));
+    const buoyTm02 = data.waves.map(w => ({ x: parseISO(w.timestamp), y: w.meanPeriod }));
+    const buoyDirm = data.waves.map(w => ({ x: parseISO(w.timestamp), y: w.meanDirection }));
+    const modelHs = modelData.timestamps.map((t, i) => ({ x: parseISO(t), y: modelData.hs?.[i] ?? null }));
+    const modelTm02 = modelData.timestamps.map((t, i) => ({ x: parseISO(t), y: modelData.tm02?.[i] ?? null }));
+    const modelDirm = modelData.timestamps.map((t, i) => ({ x: parseISO(t), y: modelData.dirm?.[i] ?? null }));
+
+    // Dynamic min/max using all datasets
+    const [xMin, xMax] = getAllDateRange([buoyHs, buoyTm02, buoyDirm, modelHs, modelTm02, modelDirm]);
 
     combinedChartData = {
       datasets: [
         {
-          label: "Model Hs (m)",
-          data: modelFiltered.map(d => ({ x: d.x, y: d.hs })),
-          borderColor: fixedColors[0],
-          backgroundColor: fixedColors[0].replace("rgb", "rgba").replace(")", ", 0.15)"),
-          borderDash: [8, 4],
-          yAxisID: "hs",
-          pointRadius: 0,
-          fill: false,
-          type: "line",
-          order: 1,
-        },
-        {
           label: "Buoy Hs (m)",
-          data: buoyPoints.map(d => ({ x: d.x, y: d.hs })),
+          data: buoyHs,
           borderColor: "#000",
           backgroundColor: "#00000022",
           yAxisID: "hs",
           pointRadius: 0,
-          fill: false,
           type: "line",
-          borderWidth: 2,
+          spanGaps: true,
           order: 2,
         },
         {
-          label: "Model tm02 (s)",
-          data: modelFiltered.map(d => ({ x: d.x, y: d.tm02 })),
-          borderColor: fixedColors[1],
-          backgroundColor: fixedColors[1].replace("rgb", "rgba").replace(")", ", 0.15)"),
+          label: "Model Hs (m)",
+          data: modelHs,
+          borderColor: "rgb(255,99,132)",
+          backgroundColor: "rgba(255,99,132,0.12)",
           borderDash: [8, 4],
-          yAxisID: "tm02",
+          yAxisID: "hs",
           pointRadius: 0,
-          fill: false,
           type: "line",
+          spanGaps: true,
           order: 1,
         },
         {
           label: "Buoy Mean Period (s)",
-          data: buoyPoints.map(d => ({ x: d.x, y: d.tm02 })),
-          borderColor: "#229944",
+          data: buoyTm02,
+          borderColor: "green",
           backgroundColor: "#22994422",
           yAxisID: "tm02",
           pointRadius: 0,
-          fill: false,
           type: "line",
-          borderWidth: 2,
+          spanGaps: true,
           order: 2,
         },
         {
-          label: "Model dirm (°)",
-          data: modelFiltered.map(d => ({ x: d.x, y: d.dirm })),
-          borderColor: fixedColors[2],
-          backgroundColor: fixedColors[2].replace("rgb", "rgba").replace(")", ", 0.15)"),
+          label: "Model Mean Period (s)",
+          data: modelTm02,
+          borderColor: "rgb(54,162,235)",
+          backgroundColor: "rgba(54,162,235,0.12)",
           borderDash: [8, 4],
-          yAxisID: "dirm",
-          pointRadius: 3,
-          fill: false,
-          type: "scatter",
+          yAxisID: "tm02",
+          pointRadius: 0,
+          type: "line",
+          spanGaps: true,
           order: 1,
         },
         {
           label: "Buoy Mean Direction (°)",
-          data: buoyPoints.map(d => ({ x: d.x, y: d.dirm })),
-          borderColor: "#c06500",
+          data: buoyDirm,
+          borderColor: "orange",
           backgroundColor: "#c0650022",
           yAxisID: "dirm",
           pointRadius: 3,
-          fill: false,
-          type: "scatter",
+          type: "line",
+          spanGaps: true,
           order: 2,
+        },
+        {
+          label: "Model Mean Direction (°)",
+          data: modelDirm,
+          borderColor: "rgb(255,206,86)",
+          backgroundColor: "rgba(255,206,86,0.12)",
+          yAxisID: "dirm",
+          pointRadius: 3,
+          type: "scatter",
+          spanGaps: true,
+          fill: true,
+          order: 1,
         },
       ],
     };
@@ -413,37 +417,32 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
     combinedChartOptions = {
       responsive: true,
       maintainAspectRatio: false,
-      interaction: {
-        mode: "index",
-        intersect: false,
-      },
-      plugins: {
-        legend: { position: "top" },
-      },
+      interaction: { mode: "nearest", intersect: false },
+      plugins: { legend: { position: "top" }, title: { display: false, text: "Buoy & Model Wave Data Overlay" } },
       scales: {
         x: {
           type: "time",
           time: {
+            timeZone: "UTC",
             unit: "day",
-            tooltipFormat: "yyyy-MM-dd HH:mm",
+            tooltipFormat: "yyyy-MM-dd",
             displayFormats: {
               day: "MMM dd",
-              hour: "HH:mm"
             }
           },
-          title: { display: true, text: "Date (UTC)" }
+          title: { display: true, text: "Date (UTC)" },
+          min: xMin,
+          max: xMax,
         },
         hs: { type: "linear", display: true, position: "left", title: { display: true, text: "Height (m)" } },
         tm02: { type: "linear", display: true, position: "right", title: { display: true, text: "Period (s)" }, grid: { drawOnChartArea: false } },
         dirm: { type: "linear", display: true, position: "right", min: 0, max: 360, title: { display: true, text: "Direction (°)" }, grid: { drawOnChartArea: false } },
       },
-      elements: {
-        point: { radius: 3 }
-      }
+      elements: { point: { radius: 3 } }
     };
   }
 
-  // Tab labels: Only show model/combined for SPECIAL_BUOY_ID, else only buoy
+  // Tab labels
   const tabLabels =
     buoyId === SPECIAL_BUOY_ID
       ? [
@@ -453,10 +452,8 @@ function BottomBuoyOffCanvas({ show, onHide, buoyId }) {
         ]
       : [{ key: "buoy", label: `Buoy: ${buoyId || ""}` }];
 
-  // Only allow tab switching if tab exists for this buoy
   const availableTabs = tabLabels.map(t => t.key);
 
-  // Ensure activeTab is valid for this buoy
   useEffect(() => {
     if (!availableTabs.includes(activeTab)) setActiveTab("buoy");
     // eslint-disable-next-line
